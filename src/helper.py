@@ -5,6 +5,7 @@ from datetime import datetime, date, timedelta
 import numpy as np
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+from numpy.linalg import inv
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
@@ -178,14 +179,8 @@ def get_market_caps(tickers):
             
     return pd.Series(mcaps, name="Market_Cap")
 
-import numpy as np
-import pandas as pd
-from numpy.linalg import inv
 
 def get_black_litterman(cov_matrix, mcaps, views_dict, conf_dict, delta=3.0, tau=0.05):
-    """
-    The 'Institutional Standard' implementation for the HSBC Case.
-    """
     tickers = cov_matrix.index
     sigma = cov_matrix.values
     
