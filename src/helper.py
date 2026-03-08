@@ -28,6 +28,32 @@ def get_polygon_data(ticker, frm = "2015-01-01", to = date.today(), timespan = "
 
     return df
 
+def get_full_portfolio_df(tickers, start_date="2015-01-01"):
+    all_dfs = []
+    
+    for ticker in tickers:
+        print(f"Fetching data for {ticker}...")
+        try:
+            # Call your custom function
+            df = get_polygon_data(ticker, frm=start_date)
+            
+            # Rename 'Close' to the Ticker name for the final join
+            df.columns = [ticker]
+            all_dfs.append(df)
+            
+            # Rate limit safety for Polygon Free Tier (5 calls/min)
+            if len(tickers) > 4:
+                time.sleep(12) 
+                
+        except Exception as e:
+            print(f"Error fetching {ticker}: {e}")
+
+    # Combine all individual ticker DataFrames into one Wide Format DataFrame
+    portfolio_df = pd.concat(all_dfs, axis=1)
+    
+    # Drop rows where ANY ticker has a NaN (important for HRP/BL math)
+    return portfolio_df.dropna()
+
 def get_matrices(tickers, start_date = "2020-01-01", end_date = date.today()):
     price_df = pd.DataFrame()
     for ticker in tickers:
@@ -40,7 +66,7 @@ def get_matrices(tickers, start_date = "2020-01-01", end_date = date.today()):
 
     return cov_matrix, corr_matrix
 
-def get_ticker_expected_returns(tickers, start_date = "2020-01-01"):
+def get_ticker_expected(tickers, start_date = "2020-01-01"):
     price_df = pd.DataFrame()
     
     for ticker in tickers:
@@ -50,22 +76,21 @@ def get_ticker_expected_returns(tickers, start_date = "2020-01-01"):
     returns_df = np.log(price_df / price_df.shift(1)).dropna()
 
     ticker_returns = returns_df.mean() * 252
+    ticker_volatility = returns_df.std() * np.sqrt(252)
+    stats_df = pd.DataFrame({
+        'Expected Return': ticker_returns,
+        'Volatility': ticker_volatility
+    })
     
-    return ticker_returns
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.optimize import minimize
-
-def plot_efficient_frontier(mu, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
+    return stats_df
+def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.04):
     """
-    Plots the Efficient Frontier and returns weights with crosshairs for the selected strategy.
+    Plots the Efficient Frontier and uses a precision solver for specific risk/return targets.
     """
     num_assets = len(tickers)
     sigma = cov_matrix.values
-    mu_values = mu.values
+    mu_values = stats["Expected Return"].values
     
-    # 1. Helper Stats Function
     def get_port_stats(weights):
         p_ret = np.dot(weights, mu_values)
         p_vol = np.sqrt(np.dot(weights.T, np.dot(sigma, weights)))
@@ -73,78 +98,73 @@ def plot_efficient_frontier(mu, cov_matrix, tickers, target_vol=None, find_max_s
         return p_ret, p_vol, p_sharpe
 
     def neg_sharpe(weights): return -get_port_stats(weights)[2]
+    def neg_ret(weights): return -get_port_stats(weights)[0] # For target vol
     def min_vol_func(weights): return get_port_stats(weights)[1]
 
-    # 2. Optimization: Constraints and Bounds
-    constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+    # Constraints & Bounds
+    sum_cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
     bounds = tuple((0, 1) for _ in range(num_assets))
     init_guess = [1/num_assets] * num_assets
 
-    # 3. Calculate Frontier Line (Background Curve)
-    target_returns = np.linspace(mu_values.min(), mu_values.max(), 50)
+    # 1. Background Curve: Find Global Minimum Variance (GMV) first
+    res_gmv = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
+    min_possible_vol = res_gmv.fun
+    
+    # Generate background curve from GMV up to the highest return asset
+    target_returns = np.linspace(get_port_stats(res_gmv.x)[0], mu_values.max(), 50)
     efficient_vols = []
     for target in target_returns:
-        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
-                {'type': 'eq', 'fun': lambda w: np.dot(w, mu_values) - target})
+        cons = [sum_cons, {'type': 'eq', 'fun': lambda w: np.dot(w, mu_values) - target}]
         res = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
         efficient_vols.append(res.fun if res.success else np.nan)
 
-    # 4. Logical Branching for Output & Crosshairs
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(efficient_vols, target_returns, color='#1f77b4', linestyle='--', alpha=0.6, label='Efficient Frontier')
 
-    opt_ret, opt_vol = None, None
+    opt_weights = None
+    title_suffix = "Strategic Asset Allocation"
 
+    # 2. Precision Branching
     if find_max_sharpe:
-        # Optimization for Max Sharpe
-        res = minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+        res = minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
         opt_weights = res.x
         opt_ret, opt_vol, opt_sharpe = get_port_stats(opt_weights)
         
-        # Gold Star and Crosshairs for Max Sharpe
-        ax.axvline(x=opt_vol, color='gold', linestyle=':', alpha=0.8, linewidth=1.5)
-        ax.axhline(y=opt_ret, color='gold', linestyle=':', alpha=0.8, linewidth=1.5)
+        ax.axvline(x=opt_vol, color='gold', linestyle=':', alpha=0.8)
+        ax.axhline(y=opt_ret, color='gold', linestyle=':', alpha=0.8)
         ax.scatter(opt_vol, opt_ret, color='gold', marker='*', s=300, edgecolors='black', zorder=15, 
                    label=f'Max Sharpe (SR: {opt_sharpe:.2f})')
         title_suffix = "Max Sharpe Optimization"
     
     elif target_vol is not None:
-        # Optimization for specific Risk Budget
-        valid_vols = np.array(efficient_vols)
-        idx = np.nanargmin(np.abs(valid_vols - target_vol))
-        opt_ret = target_returns[idx]
-        opt_vol = target_vol # Use the exact target for the line
+        # Safety Check
+        if target_vol < min_possible_vol:
+            print(f"Warning: Target {target_vol:.1%} is below Minimum Variance ({min_possible_vol:.1%}). Using GMV.")
+            opt_weights = res_gmv.x
+        else:
+            # PRECISION SOLVER: Maximize Return where Vol == Target
+            vol_cons = {'type': 'eq', 'fun': lambda w: np.sqrt(np.dot(w.T, np.dot(sigma, w))) - target_vol}
+            res = minimize(neg_ret, init_guess, method='SLSQP', bounds=bounds, constraints=[sum_cons, vol_cons])
+            opt_weights = res.x
         
-        # Re-run specific optimization for that return to get exact weights
-        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
-                {'type': 'eq', 'fun': lambda w: np.dot(w, mu_values) - opt_ret})
-        res = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
-        opt_weights = res.x
-        
-        # Red Crosshairs for Target Vol
-        ax.axvline(x=opt_vol, color='red', linestyle=':', alpha=0.8, linewidth=1.5, label=f'Target Risk ({opt_vol:.1%})')
-        ax.axhline(y=opt_ret, color='red', linestyle=':', alpha=0.8, linewidth=1.5, label=f'Exp. Return ({opt_ret:.1%})')
-        ax.scatter(opt_vol, opt_ret, color='red', marker='X', s=150, zorder=10, label='Target Portfolio')
-        title_suffix = f"Risk-Constrained Optimization ({target_vol:.1%})"
-    else:
-        opt_weights = None
-        title_suffix = "Strategic Asset Allocation"
+        opt_ret, opt_vol, opt_sharpe = get_port_stats(opt_weights)
+        ax.axvline(x=opt_vol, color='red', linestyle=':', alpha=0.8)
+        ax.axhline(y=opt_ret, color='red', linestyle=':', alpha=0.8)
+        ax.scatter(opt_vol, opt_ret, color='red', marker='X', s=150, zorder=10, label=f'Target SR ({opt_sharpe:.1})')
+        title_suffix = f"Risk-Targeted ({target_vol:.1%})"
 
-    # 5. Plot Individual Assets
-    asset_vols = np.sqrt(np.diag(sigma))
+    # 3. Individual Assets & Styling
+    asset_vols = stats["Volatility"].values
     for i, ticker in enumerate(tickers):
         ax.scatter(asset_vols[i], mu_values[i], s=100, edgecolors='black', alpha=0.8)
         ax.annotate(f" {ticker}", (asset_vols[i], mu_values[i]), fontsize=9, fontweight='bold')
 
-    # Styling
     ax.set_title(f"HSBC Case: {title_suffix}", fontsize=14, fontweight='bold')
     ax.set_xlabel("Annualized Volatility (Risk)")
     ax.set_ylabel("Annualized Expected Return")
     ax.grid(True, linestyle=':', alpha=0.3)
-    ax.legend(loc='best', frameon=True)
-    ax.set_xlim(left=0)
+    ax.legend(loc='best')
     
-    # Output Weights as pd.Series
     weights_series = pd.Series(opt_weights, index=tickers, name="Optimal weights") if opt_weights is not None else None
     return fig, weights_series
 
@@ -185,7 +205,7 @@ def get_black_litterman(cov_matrix, mcaps, views_dict, conf_dict, delta=3.0, tau
     sigma = cov_matrix.values
     
     # --- Step A: Market Equilibrium (The Prior) ---
-    w_mkt = mcaps / mcaps.sum()
+    w_mkt = np.log(mcaps) / np.log(mcaps).sum()
     # Pi is what the world thinks. delta=3.0 is Mr. Seng's risk profile.
     pi = delta * sigma.dot(w_mkt.values)
     

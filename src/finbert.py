@@ -7,25 +7,6 @@ import pandas as pd
 import numpy as np
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
-test_sentences = [
-    "S&P 500 futures climb as easing inflation data suggests a pause in rate hikes.",
-    "Equities retreat as underwhelming tech earnings spark fears of a broader valuation reset.",
-    "Markets remain flat despite a surprise beat in payroll data, as investors weigh the potential for a hawkish Fed response.",
-    "The regional bank's net interest margin exceeded expectations, but rising loan-loss provisions suggest a darkening credit outlook.",
-    "Gold prices surge to record highs as geopolitical tensions in the Middle East drive a flight to safety.",
-    "GLD sees significant outflows as a stabilizing dollar reduces the appeal of non-yielding assets.",
-    "Bullion holds steady even as real yields rise, indicating strong underlying physical demand.",
-    "Treasury yields spike to 15-year highs following a lackluster 30-year bond auction.",
-    "The VIX jumps 20% as market participants rush to buy protection against a potential systemic credit event.",
-    "Yield curve inversion deepens, further signaling an impending recessionary environment.",
-    "The FOMC maintains a restrictive stance, signaling that 'higher for longer' remains the primary policy path.",
-    "Central bank officials hint at a pivot, noting that the balance of risks is shifting toward economic support.",
-    "The latest CPI print came in hotter than expected, diminishing hopes for an early summer rate cut.",
-    "The semiconductor sector outperformed today following reports of a major supply chain breakthrough.",
-    "Retail sales fell short of analyst estimates as consumer spending shows signs of fatigue amid high borrowing costs.",
-    "The company's restructuring plan aims to improve margins, though execution risks remain elevated."
-]
-
 @st.cache_data(ttl=3600)
 def fetch_benzinga_news(tickers, period = 20):
     news_data = {}
@@ -75,18 +56,6 @@ def load_fls_finbert():
     nlp = pipeline("sentiment-analysis", model = finbert, tokenizer = tokenizer)
     return nlp
 
-
-def get_sentiments(nlp, tickers, period = 20):
-    sentiments = {}
-    news = fetch_benzinga_news(tickers, period)
-    for k, v in news.items():
-        if not v:
-            sentiments[k] = []
-            continue
-        titles = [t["title"] for t in v]
-        sentiments[k] = nlp(titles)
-    return sentiments
-
 def get_bl_parameters(tickers, news_data, tone_model, fls_model):
     views = {}
     confs = {}
@@ -94,34 +63,56 @@ def get_bl_parameters(tickers, news_data, tone_model, fls_model):
     for t in tickers:
         articles = news_data.get(t, [])
         if not articles:
-            views[t], confs[t] = 0, 0.01 # Default to Neutral
+            views[t], confs[t] = 0.0, 0.01 
             continue
         
         titles = [a['title'] for a in articles]
-        tones = tone_model(titles)
-        fls_labels = fls_model(titles)
-
-        # 1. Calculate Average Sentiment (Returns)
-        sentiment_scores = []
-        for r in tones:
-            val = 1 if r['label'] == 'positive' else -1 if r['label'] == 'negative' else 0
-            sentiment_scores.append(val * r['score'])
         
-        # Map avg sentiment (-1 to 1) to a return view (-5% to +5%)
-        views[t] = np.mean(sentiment_scores) * 0.05
+        # Run models separately to avoid 'Zip' crashes
+        try:
+            tones = tone_model(titles)
+            fls = fls_model(titles)
+        except Exception as e:
+            # Fallback: If FLS fails, just use Tones with neutral weights
+            print(f"Model error for {t}: {e}")
+            continue
 
-        # 2. Calculate Confidence (Quality Filter)
-        fls_weights = []
-        for f in fls_labels:
-            if f['label'] == 'Specific FLS': weight = 0.9
-            elif f['label'] == 'Non-specific FLS': weight = 0.5
-            else: weight = 0.1 # Not FLS
-            fls_weights.append(weight)
+        weighted_scores = []
+        # Use range to ensure we stay within bounds
+        for i in range(len(tones)):
+            # TONE LOGIC
+            t_res = tones[i]
+            direction = 1 if t_res['label'] == 'positive' else -1 if t_res['label'] == 'negative' else 0
+            score = direction * t_res['score']
+            
+            # FLS WEIGHTING (The extra logic)
+            # We add a 'get' or check to make sure the FLS result exists for this index
+            f_label = fls[i]['label'] if i < len(fls) else 'Not FLS'
+            
+            if f_label == 'Specific FLS': weight = 1.5
+            elif f_label == 'Non-specific FLS': weight = 1.0
+            else: weight = 0.5 
+                
+            weighted_scores.append(score * weight)
+
+        # 1. Update Mu (Q)
+        views[t] = np.mean(weighted_scores) * 0.2
         
-        # Final Confidence = Average FLS weight scaled by model certainty
-        confs[t] = np.mean(fls_weights)
+        # 2. Update Confidence (The Consensus Math)
+        std_dev = np.std(weighted_scores)
+        agreement = 1 / (1 + std_dev)
+        volume = min(np.log10(len(weighted_scores) + 1) / np.log10(31), 1.0)
+        
+        confs[t] = agreement * volume
         
     return views, confs
+
+def ai_bl_params(tickers, period = 20):
+    nlp = load_finbert()
+    fls = load_fls_finbert()
+    news_data = fetch_benzinga_news(tickers, period)
+    bl_params = get_bl_parameters(tickers, news_data, nlp, fls)
+    return bl_params
 
 def main():
     tickers = ["AAPL", "STX", "ASML","NVDA"]
