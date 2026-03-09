@@ -264,7 +264,28 @@ def run_nrp_optimization(price_data):
     weights = inv_vols/inv_vols.sum()
     return pd.Series(weights)
 
+def run_erp_optimization(price_data):
+    # 1. Raw Sample Covariance Matrix (No shrinking)
+    returns = price_data.pct_change().dropna()
+    cov = returns.cov().values
+    n = len(price_data.columns)
+    
+    # 2. The ERC Goal: Each asset's Risk Contribution = Total Risk / N
+    def objective(w):
+        p_vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+        # Risk Contribution = Weight * (Covariance * Weights) / Portfolio Vol
+        rc = w * (np.dot(cov, w)) / p_vol
+        target_rc = p_vol / n
+        return np.sum(np.square(rc - target_rc))
 
+    # 3. Standard constraints: Weights sum to 100%, Long-only (0 to 1)
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1.0})
+    bounds = [(0, 1) for _ in range(n)]
+    
+    # Start with equal weights
+    res = minimize(objective, [1/n]*n, bounds=bounds, constraints=constraints)
+    
+    return pd.Series(res.x, index=price_data.columns)
 
 def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
     """
