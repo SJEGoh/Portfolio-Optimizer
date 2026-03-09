@@ -6,6 +6,7 @@ import numpy as np
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 from numpy.linalg import inv
+from pypfopt import EfficientCVaR, expected_returns, HRPOpt
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
@@ -40,10 +41,6 @@ def get_full_portfolio_df(tickers, start_date="2015-01-01"):
             # Rename 'Close' to the Ticker name for the final join
             df.columns = [ticker]
             all_dfs.append(df)
-            
-            # Rate limit safety for Polygon Free Tier (5 calls/min)
-            if len(tickers) > 4:
-                time.sleep(12) 
                 
         except Exception as e:
             print(f"Error fetching {ticker}: {e}")
@@ -83,10 +80,8 @@ def get_ticker_expected(tickers, start_date = "2020-01-01"):
     })
     
     return stats_df
-def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.04):
-    """
-    Plots the Efficient Frontier and uses a precision solver for specific risk/return targets.
-    """
+
+def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
     num_assets = len(tickers)
     sigma = cov_matrix.values
     mu_values = stats["Expected Return"].values
@@ -159,7 +154,7 @@ def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_ma
         ax.scatter(asset_vols[i], mu_values[i], s=100, edgecolors='black', alpha=0.8)
         ax.annotate(f" {ticker}", (asset_vols[i], mu_values[i]), fontsize=9, fontweight='bold')
 
-    ax.set_title(f"HSBC Case: {title_suffix}", fontsize=14, fontweight='bold')
+    ax.set_title(f"{title_suffix}", fontsize=14, fontweight='bold')
     ax.set_xlabel("Annualized Volatility (Risk)")
     ax.set_ylabel("Annualized Expected Return")
     ax.grid(True, linestyle=':', alpha=0.3)
@@ -244,6 +239,198 @@ def get_black_litterman(cov_matrix, mcaps, views_dict, conf_dict, delta=3.0, tau
     mu_bl = term1.dot(term2)
     
     return pd.Series(mu_bl, index=tickers, name="BL Adjusted Returns")
+
+def run_hrp_optimization(price_data):
+    # 1. Calculate historical returns for the correlation matrix
+    returns = price_data.pct_change().dropna()
+    
+    # 2. Initialize HRP
+    hrp = HRPOpt(returns)
+    
+    # 3. Optimize the weights
+    # HRP does not need 'Expected Returns' - it only needs the returns' structure
+    weights = hrp.optimize()
+    
+    # 4. Clean and return
+    cleaned_weights = hrp.clean_weights()
+    return pd.Series(cleaned_weights)
+
+def run_nrp_optimization(price_data):
+    returns = price_data.pct_change().dropna()
+
+    vols = returns.std()
+
+    inv_vols = 1/vols
+    weights = inv_vols/inv_vols.sum()
+    return pd.Series(weights)
+
+
+
+def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
+    """
+    Standard MPT Solver for Backtesting.
+    Input: price_data (DataFrame)
+    Output: pd.Series of weights
+    """
+    # 1. Prepare Data (Stats & Covariance)
+    tickers = price_data.columns
+    returns = price_data.pct_change().dropna()
+    
+    # Annualized Stats
+    mu_values = returns.mean().values * 252
+    sigma = (returns.cov().values) * 252
+    num_assets = len(tickers)
+    
+    def get_port_stats(weights):
+        p_ret = np.dot(weights, mu_values)
+        p_vol = np.sqrt(np.dot(weights.T, np.dot(sigma, weights)))
+        p_sharpe = (p_ret - risk_free_rate) / p_vol
+        return p_ret, p_vol, p_sharpe
+
+    # Optimization Functions
+    def neg_sharpe(weights): return -get_port_stats(weights)[2]
+    def neg_ret(weights): return -get_port_stats(weights)[0]
+    def min_vol_func(weights): return get_port_stats(weights)[1]
+
+    # Constraints & Bounds
+    sum_cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+    bounds = tuple((0, 1) for _ in range(num_assets))
+    init_guess = [1/num_assets] * num_assets
+
+    # 2. Optimization Logic
+    opt_weights = None
+    
+    if find_max_sharpe:
+        res = minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
+        opt_weights = res.x
+    
+    elif target_vol is not None:
+        # Find Global Minimum Variance (GMV) as a safety floor
+        res_gmv = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
+        
+        if target_vol < res_gmv.fun:
+            opt_weights = res_gmv.x # Fallback to GMV if target is impossible
+        else:
+            vol_cons = {'type': 'eq', 'fun': lambda w: np.sqrt(np.dot(w.T, np.dot(sigma, w))) - target_vol}
+            res = minimize(neg_ret, init_guess, method='SLSQP', bounds=bounds, constraints=[sum_cons, vol_cons])
+            opt_weights = res.x
+
+    # 3. Clean and return as labeled Series for the backtester
+    return pd.Series(opt_weights, index=tickers)
+
+def run_cvar_optimization(price_data, alpha=0.95):
+    """
+    Optimizes for the Minimum CVaR (Expected Shortfall).
+    alpha=0.95 means we are looking at the average of the worst 5% of losses.
+    """
+    # 1. Calculate daily returns (CVaR needs the raw distribution, not a matrix)
+    returns = price_data.pct_change().dropna()
+    
+    # 2. Initialize EfficientCVaR 
+    # We pass 'None' for expected returns to focus purely on risk minimization
+    # beta is the confidence level (0.95 corresponds to the 5% tail)
+    ec = EfficientCVaR(expected_returns=None, returns=returns, beta=alpha)
+    
+    # 3. Optimize for the minimum CVaR
+    weights = ec.min_cvar()
+    
+    # 4. Clean and return as a Series
+    cleaned_weights = ec.clean_weights()
+    return pd.Series(cleaned_weights.values(), index=returns.columns)
+
+def get_returns(cleaned_optimization, price_data, stats, cov_matrix):
+    weights = np.array([cleaned_optimization[t] for t in price_data.columns])
+    ret = np.dot(weights, stats["Expected Return"].values)
+    vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix.values, weights)))
+    sharpe = (ret-0.02)/vol
+    return ret, vol, sharpe
+
+def run_10yr_backtest(price_data, strategy_func, rebalance_days = 126, lookback_days = 252):
+    """
+    Simulates a 10-year journey starting with $100.
+    rebalance_step = 126 days (~6 months)
+    """
+    initial_cash = 100.0
+    current_value = initial_cash
+    equity_curve = []
+    equity_dates = []
+    weight_history = {}
+    
+    # 1. Identify Rebalance Dates
+    # We need at least 1 year of data before the start to 'train' the first weights
+    rebalance_indices = np.arange(lookback_days, len(price_data), rebalance_days)
+    
+    for start_idx in rebalance_indices:
+        # A. Look-back (The 1 year of data prior to the rebalance)
+        train_data = price_data.iloc[start_idx - lookback_days : start_idx]
+        
+        # B. Optimize (Get weights for the NEXT 6 months)
+        weights = strategy_func(train_data)
+        rebalance_date = price_data.index[start_idx]
+        weight_history[rebalance_date] = weights
+        
+        # C. Apply (Calculate performance for the next 126 days)
+        end_idx = min(start_idx + rebalance_days, len(price_data))
+        period_returns = price_data.iloc[start_idx : end_idx].pct_change().dropna()
+        
+        # Calculate daily growth of the $100 slice
+        portfolio_daily_rets = (period_returns * weights).sum(axis=1)
+        
+        for date, ret in portfolio_daily_rets.items():
+            current_value *= (1 + ret)
+            equity_curve.append(current_value)
+            equity_dates.append(date)
+    weights_df = pd.DataFrame(weight_history).T
+    return pd.Series(equity_curve, index = equity_dates), weights_df
+
+def extract_portfolio_metrics(equity_curve, risk_free_rate=0.02):
+    """
+    Calculates institutional metrics from an equity curve series.
+    risk_free_rate: Annualized (e.g., 0.04 for 4% in 2026).
+    """
+    # 1. Convert Equity Curve to Daily Returns
+    daily_rets = equity_curve.pct_change().dropna()
+    
+    # 2. Annualized Return (CAGR)
+    total_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1
+    years = (equity_curve.index[-1] - equity_curve.index[0]).days / 365.25
+    cagr = (1 + total_return)**(1/years) - 1
+    
+    # 3. Annualized Volatility
+    vol = daily_rets.std() * np.sqrt(252)
+    
+    # 4. Sharpe Ratio (The 'Hurdle' metric)
+    sharpe = (cagr - risk_free_rate) / vol
+    
+    # 5. Maximum Drawdown (The 'Safety' metric)
+    rolling_max = equity_curve.cummax()
+    drawdowns = (equity_curve - rolling_max) / rolling_max
+    max_drawdown = drawdowns.min()
+    
+    return {
+        "CAGR": f"{cagr:.2%}",
+        "Volatility": f"{vol:.2%}",
+        "Sharpe Ratio": round(sharpe, 2),
+        "Max Drawdown": f"{max_drawdown:.2%}"
+    }
+
+def calculate_average_turnover(weights_df):
+    """
+    Calculates the average portfolio turnover per rebalance period.
+    weights_df: Index = Dates, Columns = Tickers, Values = Weights (0 to 1)
+    """
+    # 1. Calculate the absolute difference between each rebalance
+    # .diff() compares current row to previous row
+    absolute_diff = weights_df.diff().abs()
+    
+    # 2. Sum the differences across all assets for each period
+    # We divide by 2 because selling 10% of A to buy 10% of B is 10% turnover, not 20%.
+    period_turnover = absolute_diff.sum(axis=1) / 2
+    
+    # 3. Calculate the mean turnover across all periods (ignoring the first NaN row)
+    avg_turnover = period_turnover.mean()
+    
+    return avg_turnover
 
 if __name__ == "__main__":
     basket = ["SPY", "TLT", "GLD", "IVOL"]
