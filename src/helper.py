@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
-
+@st.cache_data(ttl=86400)
 def get_polygon_data(ticker, frm = "2015-01-01", to = date.today(), timespan = "day"):
     aggs = client.get_aggs(
         ticker=ticker, 
@@ -33,6 +33,7 @@ def get_polygon_data(ticker, frm = "2015-01-01", to = date.today(), timespan = "
 
     return df
 
+@st.cache_data(ttl=86400)
 def get_full_portfolio_df(tickers, start_date="2015-01-01"):
     all_dfs = []
     
@@ -55,6 +56,7 @@ def get_full_portfolio_df(tickers, start_date="2015-01-01"):
     # Drop rows where ANY ticker has a NaN (important for HRP/BL math)
     return portfolio_df
 
+@st.cache_data(ttl=86400)
 def get_matrices(tickers, start_date = "2020-01-01", end_date = date.today()):
     price_df = pd.DataFrame()
     for ticker in tickers:
@@ -67,6 +69,7 @@ def get_matrices(tickers, start_date = "2020-01-01", end_date = date.today()):
 
     return cov_matrix, corr_matrix
 
+@st.cache_data(ttl=86400)
 def get_ticker_expected(tickers, start_date = "2020-01-01"):
     price_df = pd.DataFrame()
     
@@ -173,6 +176,7 @@ def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_ma
     weights_series = pd.Series(opt_weights, index=tickers, name="Optimal weights") if opt_weights is not None else None
     return traces, weights_series
 
+@st.cache_data(ttl=86400)
 def get_market_caps(tickers):
     mcaps = {}
     for ticker in tickers:
@@ -204,7 +208,7 @@ def get_market_caps(tickers):
             
     return pd.Series(mcaps, name="Market_Cap")
 
-
+@st.cache_data(ttl=86400)
 def get_black_litterman(cov_matrix, mcaps, views_dict, conf_dict, delta=3.0, tau=0.05):
     tickers = cov_matrix.index
     sigma = cov_matrix.values
@@ -250,6 +254,7 @@ def get_black_litterman(cov_matrix, mcaps, views_dict, conf_dict, delta=3.0, tau
     
     return pd.Series(mu_bl, index=tickers, name="BL Adjusted Returns")
 
+@st.cache_data(ttl=86400)
 def run_hrp_optimization(price_data):
     # 1. Calculate historical returns for the correlation matrix
     returns = price_data.pct_change().dropna()
@@ -265,6 +270,7 @@ def run_hrp_optimization(price_data):
     cleaned_weights = hrp.clean_weights()
     return pd.Series(cleaned_weights)
 
+@st.cache_data(ttl=86400)
 def run_nrp_optimization(price_data):
     returns = price_data.pct_change().dropna()
 
@@ -274,6 +280,7 @@ def run_nrp_optimization(price_data):
     weights = inv_vols/inv_vols.sum()
     return pd.Series(weights)
 
+@st.cache_data(ttl=86400)
 def run_erp_optimization(price_data):
     # 1. Raw Sample Covariance Matrix (No shrinking)
     returns = price_data.pct_change().dropna()
@@ -297,6 +304,7 @@ def run_erp_optimization(price_data):
     
     return pd.Series(res.x, index=price_data.columns)
 
+@st.cache_data(ttl=86400)
 def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02, is_bl=False, stats = None):
     """
     Standard MPT Solver for Backtesting.
@@ -353,6 +361,7 @@ def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, ris
 
     return pd.Series(opt_weights, index=tickers)
 
+@st.cache_data(ttl=86400)
 def run_cvar_optimization(price_data, alpha=0.95):
     """
     Optimizes for the Minimum CVaR (Expected Shortfall).
@@ -380,6 +389,7 @@ def get_returns(cleaned_optimization, price_data, stats, cov_matrix):
     sharpe = (ret-0.02)/vol
     return ret, vol, sharpe
 
+@st.cache_data(ttl=86400)
 def run_10yr_backtest(price_data, strategy_func, rebalance_days=126, lookback_days=252):
     initial_cash = 100.0
     current_value = initial_cash
