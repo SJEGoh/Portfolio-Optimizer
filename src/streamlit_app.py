@@ -153,12 +153,11 @@ def main():
                 weights_df = pd.DataFrame(strategy['weights']).reset_index()
                 weights_df.columns = ['Ticker', 'Weight']
                 weights_df = weights_df.sort_values(by='Weight', ascending=False) # Sorting makes it look 'pro'
-
+                bar_colors = [ticker_color_map.get(t, '#7f7f7f') for t in weights_df['Ticker']]
                 fig_bar = go.Figure(go.Bar(
                     x=weights_df['Ticker'],
                     y=weights_df['Weight'],
-                    marker_color='#1f77b4', # Consistent professional blue
-                    fillcolor=ticker_color_map.get(weights_df["Ticker"], '#7f7f7f'),
+                    marker=dict(color=bar_colors),
                     hovertemplate="<b>%{x}</b><br>Weight: %{y:.2%}<extra></extra>"
                 ))
 
