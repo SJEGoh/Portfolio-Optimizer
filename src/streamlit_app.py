@@ -158,7 +158,7 @@ def main():
                     x=weights_df['Ticker'],
                     y=weights_df['Weight'],
                     marker_color='#1f77b4', # Consistent professional blue
-                    fillcolor=ticker_color_map.get(ticker, '#7f7f7f'),
+                    fillcolor=ticker_color_map.get(weights_df["Ticker"], '#7f7f7f'),
                     hovertemplate="<b>%{x}</b><br>Weight: %{y:.2%}<extra></extra>"
                 ))
 
