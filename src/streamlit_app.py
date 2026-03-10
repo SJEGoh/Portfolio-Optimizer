@@ -1,7 +1,7 @@
 import streamlit as st
 from helper import get_matrices, get_ticker_expected, plot_efficient_frontier, get_market_caps, get_black_litterman, get_full_portfolio_df
 from helper import run_hrp_optimization, run_cvar_optimization, get_returns, run_nrp_optimization, run_erp_optimization
-from helper import fit_model
+from helper import fit_model, generate_comparison_bar
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
 import pandas as pd
@@ -86,16 +86,13 @@ def main():
             elif trace.legendgroup == "Black-Litterman":
                 trace.marker.color = BL_COLOR
                 trace.name = "Adjusted Assets (BL View)"
-                # Let the BL dots show up in the legend for clarity
                 trace.showlegend = True
 
-    # 4. FINAL STYLING
     fig.update_layout(template="plotly_white", hovermode="closest")
     
 
     results = []
     for name, s in zip(models, models_to_run):
-        # Logic: model_function(**all_parameters_in_dict)
         weights = s['model'](**s['model_params'])
         ret, vol, sharpe = get_returns(weights, price_data, expected, cov_matrix)
         results.append({"name": name, "weights": weights, "metrics": (ret, vol, sharpe)})
@@ -119,8 +116,63 @@ def main():
 
         # Add it to your figure
         fig.add_trace(current_port_trace)
-
     st.plotly_chart(fig, theme = None)
+    # Create the tabs at the top of your results section
+    tab_summary, *strategy_tabs = st.tabs(["📊 Executive Summary"] + [f"🎯 {m['name']}" for m in results])
 
+    # --- TAB 1: EXECUTIVE SUMMARY ---
+    with tab_summary:
+        st.subheader("Strategy Performance Leaderboard")
+        
+        # Leaderboard Table
+        summary_df = pd.DataFrame([
+            {
+                "Strategy": r['name'], 
+                "Exp. Return": f"{r['metrics'][0]:.2%}", 
+                "Volatility": f"{r['metrics'][1]:.2%}", 
+                "Sharpe": f"{r['metrics'][2]:.2f}"
+            } for r in results
+        ])
+        st.table(summary_df)
+
+        # Comparison Bar Chart (Returns vs Vol)
+        # This is where you show the judges the "Efficiency" of each model
+        st.plotly_chart(generate_comparison_bar(results)) 
+
+    # --- STRATEGY SPECIFIC TABS ---
+    for i, tab in enumerate(strategy_tabs):
+        strategy = results[i]
+        with tab:
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.metric("Expected Return", f"{strategy['metrics'][0]:.2%}")
+                st.metric("Volatility", f"{strategy['metrics'][1]:.2%}")
+                st.metric("Sharpe Ratio", f"{strategy['metrics'][2]:.2f}")
+                
+            with col2:
+                weights_df = pd.DataFrame(strategy['weights']).reset_index()
+                weights_df.columns = ['Ticker', 'Weight']
+                weights_df = weights_df.sort_values(by='Weight', ascending=False) # Sorting makes it look 'pro'
+
+                fig_bar = go.Figure(go.Bar(
+                    x=weights_df['Ticker'],
+                    y=weights_df['Weight'],
+                    marker_color='#1f77b4', # Consistent professional blue
+                    hovertemplate="<b>%{x}</b><br>Weight: %{y:.2%}<extra></extra>"
+                ))
+
+                fig_bar.update_layout(
+                    title=f"<b>Allocation: {strategy['name']}</b>",
+                    yaxis_tickformat='.1%',
+                    template="plotly_white",
+                    margin=dict(t=40, b=40, l=40, r=40),
+                    height=400
+                )
+
+                st.plotly_chart(fig_bar, width = "stretch")
+                
 if __name__ == "__main__":
     main()
+
+# SPY, TLT, AAPL, GLD, XOM

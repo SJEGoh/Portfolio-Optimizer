@@ -9,6 +9,7 @@ from numpy.linalg import inv
 from pypfopt import EfficientCVaR, expected_returns, HRPOpt
 import plotly.graph_objects as go
 from finbert import ai_bl_params
+from plotly.subplots import make_subplots
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
@@ -82,6 +83,7 @@ def get_ticker_expected(tickers, start_date = "2020-01-01"):
     })
     
     return stats_df
+
 def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
     num_assets = len(tickers)
     sigma = cov_matrix.values
@@ -274,7 +276,7 @@ def run_nrp_optimization(price_data):
 def run_erp_optimization(price_data):
     # 1. Raw Sample Covariance Matrix (No shrinking)
     returns = price_data.pct_change().dropna()
-    cov = returns.cov().values
+    cov = returns.cov().values * 252
     n = len(price_data.columns)
     
     # 2. The ERC Goal: Each asset's Risk Contribution = Total Risk / N
@@ -294,20 +296,26 @@ def run_erp_optimization(price_data):
     
     return pd.Series(res.x, index=price_data.columns)
 
-def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
+def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02, is_bl=False, stats = None):
     """
     Standard MPT Solver for Backtesting.
-    Input: price_data (DataFrame)
-    Output: pd.Series of weights
+    Supports Black-Litterman by accepting pre-calculated 'stats' (expected returns).
     """
     # 1. Prepare Data (Stats & Covariance)
     tickers = price_data.columns
     returns = price_data.pct_change().dropna()
-    
-    # Annualized Stats
-    mu_values = returns.mean().values * 252
-    sigma = (returns.cov().values) * 252
     num_assets = len(tickers)
+    
+    # Calculate Annualized Covariance (Sigma remains the same for both)
+    sigma = (returns.cov().values) * 252
+    
+    # LOGIC SWITCH: Use BL adjusted returns if provided, otherwise use historical
+    if is_bl is True:
+        # Pull the 'Expected Return' column we built in fit_model
+        mu_values = stats["Expected Return"].values
+    else:
+        # Standard historical mean
+        mu_values = returns.mean().values * 252
     
     def get_port_stats(weights):
         p_ret = np.dot(weights, mu_values)
@@ -333,17 +341,15 @@ def run_mpt_optimization(price_data, target_vol=None, find_max_sharpe=False, ris
         opt_weights = res.x
     
     elif target_vol is not None:
-        # Find Global Minimum Variance (GMV) as a safety floor
         res_gmv = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
         
         if target_vol < res_gmv.fun:
-            opt_weights = res_gmv.x # Fallback to GMV if target is impossible
+            opt_weights = res_gmv.x 
         else:
             vol_cons = {'type': 'eq', 'fun': lambda w: np.sqrt(np.dot(w.T, np.dot(sigma, w))) - target_vol}
             res = minimize(neg_ret, init_guess, method='SLSQP', bounds=bounds, constraints=[sum_cons, vol_cons])
             opt_weights = res.x
 
-    # 3. Clean and return as labeled Series for the backtester
     return pd.Series(opt_weights, index=tickers)
 
 def run_cvar_optimization(price_data, alpha=0.95):
@@ -514,6 +520,8 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
                 value = 0.05
                 )
                 # make it expected instead
+                view_dict = {}
+                conf_dict = {}
                 default_views = expected["Expected Return"].to_dict()
                 default_conf = {t: 0.0 for t in basket}
                 if st.button("Populate with Finbert"):
@@ -526,18 +534,20 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
                         with c1:
                             st.write(ticker)
                         with c2:
-                            st.number_input(
+                            curr_view = st.number_input(
                                 f"Enter expected return for {ticker}",
                                 step = 0.001,
                                 value = default_views[ticker]
                             )
+                            default_views[ticker] = curr_view
                         with c3:
-                            st.number_input(
+                            curr_conf = st.number_input(
                                 f"Enter confidence for {ticker}",
                                 step = 0.001,
                                 min_value = 0.0,
                                 value = default_conf[ticker]
                             )
+                            default_conf[ticker] = curr_conf
                     max_sharpe = st.radio("Max Sharpe",
                             [True, False], key = f"BL_sharpe_{ticker}",
                             horizontal = True)
@@ -547,14 +557,17 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
                             step = 0.001, key = f"BL_vol_{ticker}",
                             min_value = 0.0,
                         )
+                
                 temp["find_max_sharpe"] = max_sharpe
                 temp["target_vol"] = target_vol if not max_sharpe else None
                 mcaps = get_market_caps(basket)
-                bl_mu = get_black_litterman(cov_matrix = cov_matrix, mcaps = mcaps, views_dict =default_views,
+                bl_mu = get_black_litterman(cov_matrix = cov_matrix, mcaps = mcaps, views_dict = default_views,
                                             conf_dict = default_conf, delta = delta, tau = tau)
                 t = expected.copy()
                 t["Expected Return"] = bl_mu
                 temp["price_data"] = price_data
+                temp["is_bl"] = True
+                temp["stats"] = t
           
             traces["Black-Litterman"] = plot_efficient_frontier(t, cov_matrix, basket, target_vol = temp["target_vol"], find_max_sharpe = max_sharpe)
 
@@ -573,8 +586,52 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
         params["model_params"] = temp
         to_run.append(params)
     return to_run, traces
+def generate_comparison_bar(results):
+    names = [r['name'] for r in results]
+    returns = [r['metrics'][0] for r in results]
+    volatilities = [r['metrics'][1] for r in results]
+    sharpes = [r['metrics'][2] for r in results]
+    
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
+    # 1. Add Expected Return Bar
+    fig.add_trace(
+        go.Bar(x=names, y=returns, name='Expected Return', marker_color='#2ca02c',
+               hovertemplate='Return: %{y:.2%}<extra></extra>'),
+        secondary_y=False,
+    )
 
+    # 2. Add Volatility Bar
+    fig.add_trace(
+        go.Bar(x=names, y=volatilities, name='Annualized Volatility', marker_color='#d62728',
+               hovertemplate='Volatility: %{y:.2%}<extra></extra>'),
+        secondary_y=False,
+    )
+
+    # 3. Add Sharpe Ratio Line (Secondary Axis)
+    fig.add_trace(
+        go.Scatter(x=names, y=sharpes, name='Sharpe Ratio', mode='lines+markers',
+                   line=dict(color='#1f77b4', width=3),
+                   marker=dict(size=10, symbol='diamond'),
+                   hovertemplate='Sharpe: %{y:.2f}<extra></extra>'),
+        secondary_y=True,
+    )
+
+    # Styling
+    fig.update_layout(
+        title="<b>Portfolio Performance: Risk, Return, and Efficiency</b>",
+        barmode='group',
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(tickangle=45)
+    )
+
+    # Set y-axis titles
+    fig.update_yaxes(title_text="Annualized %", secondary_y=False, tickformat=".0%")
+    fig.update_yaxes(title_text="Sharpe Ratio (Score)", secondary_y=True)
+
+    return fig
 
 if __name__ == "__main__":
     basket = ["SPY", "TLT", "GLD", "IVOL"]
