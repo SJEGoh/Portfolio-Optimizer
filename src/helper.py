@@ -7,6 +7,8 @@ from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 from numpy.linalg import inv
 from pypfopt import EfficientCVaR, expected_returns, HRPOpt
+import plotly.graph_objects as go
+from finbert import ai_bl_params
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
@@ -80,7 +82,6 @@ def get_ticker_expected(tickers, start_date = "2020-01-01"):
     })
     
     return stats_df
-
 def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_max_sharpe=False, risk_free_rate=0.02):
     num_assets = len(tickers)
     sigma = cov_matrix.values
@@ -92,20 +93,18 @@ def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_ma
         p_sharpe = (p_ret - risk_free_rate) / p_vol
         return p_ret, p_vol, p_sharpe
 
-    def neg_sharpe(weights): return -get_port_stats(weights)[2]
-    def neg_ret(weights): return -get_port_stats(weights)[0] # For target vol
     def min_vol_func(weights): return get_port_stats(weights)[1]
+    def neg_sharpe(weights): return -get_port_stats(weights)[2]
+    def neg_ret(weights): return -get_port_stats(weights)[0]
 
-    # Constraints & Bounds
     sum_cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
     bounds = tuple((0, 1) for _ in range(num_assets))
     init_guess = [1/num_assets] * num_assets
 
-    # 1. Background Curve: Find Global Minimum Variance (GMV) first
+    # 1. Background Curve Logic
     res_gmv = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
     min_possible_vol = res_gmv.fun
     
-    # Generate background curve from GMV up to the highest return asset
     target_returns = np.linspace(get_port_stats(res_gmv.x)[0], mu_values.max(), 50)
     efficient_vols = []
     for target in target_returns:
@@ -113,55 +112,63 @@ def plot_efficient_frontier(stats, cov_matrix, tickers, target_vol=None, find_ma
         res = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
         efficient_vols.append(res.fun if res.success else np.nan)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(efficient_vols, target_returns, color='#1f77b4', linestyle='--', alpha=0.6, label='Efficient Frontier')
+    traces = []
 
+    # Trace 1: The Frontier Line
+    traces.append(go.Scatter(
+        x=efficient_vols, y=target_returns,
+        mode='lines', name='Efficient Frontier',
+        line=dict(dash='dash', width=2),
+        opacity=0.6,
+        hovertemplate="Frontier - Vol: %{x:.2%}<br>Ret: %{y:.2%}<extra></extra>"
+    ))
+
+    # 2. Optimization Logic & Points
     opt_weights = None
-    title_suffix = "Strategic Asset Allocation"
-
-    # 2. Precision Branching
     if find_max_sharpe:
         res = minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=sum_cons)
         opt_weights = res.x
         opt_ret, opt_vol, opt_sharpe = get_port_stats(opt_weights)
         
-        ax.axvline(x=opt_vol, color='gold', linestyle=':', alpha=0.8)
-        ax.axhline(y=opt_ret, color='gold', linestyle=':', alpha=0.8)
-        ax.scatter(opt_vol, opt_ret, color='gold', marker='*', s=300, edgecolors='black', zorder=15, 
-                   label=f'Max Sharpe (SR: {opt_sharpe:.2f})')
-        title_suffix = "Max Sharpe Optimization"
+        # MATCHING DIAMOND TEMPLATE
+        traces.append(go.Scatter(
+            x=[opt_vol], y=[opt_ret], 
+            mode='markers',
+            name='Max Sharpe',
+            marker=dict(size=14, symbol='star', line=dict(width=2, color='white')),
+            hovertemplate=f"Volatility: %{{x:.2%}}<br>Return: %{{y:.2%}}<br>Sharpe: {opt_sharpe:.2f}<extra></extra>"
+        ))
     
-    elif target_vol is not None:
-        # Safety Check
-        if target_vol < min_possible_vol:
-            print(f"Warning: Target {target_vol:.1%} is below Minimum Variance ({min_possible_vol:.1%}). Using GMV.")
-            opt_weights = res_gmv.x
-        else:
-            # PRECISION SOLVER: Maximize Return where Vol == Target
+    if target_vol is not None:
+        if target_vol >= min_possible_vol:
             vol_cons = {'type': 'eq', 'fun': lambda w: np.sqrt(np.dot(w.T, np.dot(sigma, w))) - target_vol}
             res = minimize(neg_ret, init_guess, method='SLSQP', bounds=bounds, constraints=[sum_cons, vol_cons])
             opt_weights = res.x
+        else:
+            opt_weights = res_gmv.x
         
         opt_ret, opt_vol, opt_sharpe = get_port_stats(opt_weights)
-        ax.axvline(x=opt_vol, color='red', linestyle=':', alpha=0.8)
-        ax.axhline(y=opt_ret, color='red', linestyle=':', alpha=0.8)
-        ax.scatter(opt_vol, opt_ret, color='red', marker='X', s=150, zorder=10, label=f'Target SR ({opt_sharpe:.1})')
-        title_suffix = f"Risk-Targeted ({target_vol:.1%})"
+        
+        # MATCHING DIAMOND TEMPLATE
+        traces.append(go.Scatter(
+            x=[opt_vol], y=[opt_ret], 
+            mode='markers',
+            name='Target Risk',
+            marker=dict(size=12, symbol='diamond', line=dict(width=2, color='white')),
+            hovertemplate=f"Volatility: %{{x:.2%}}<br>Return: %{{y:.2%}}<br>Sharpe: {opt_sharpe:.2f}<extra></extra>"
+        ))
 
-    # 3. Individual Assets & Styling
-    asset_vols = stats["Volatility"].values
-    for i, ticker in enumerate(tickers):
-        ax.scatter(asset_vols[i], mu_values[i], s=100, edgecolors='black', alpha=0.8)
-        ax.annotate(f" {ticker}", (asset_vols[i], mu_values[i]), fontsize=9, fontweight='bold')
-
-    ax.set_title(f"{title_suffix}", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Annualized Volatility (Risk)")
-    ax.set_ylabel("Annualized Expected Return")
-    ax.grid(True, linestyle=':', alpha=0.3)
-    ax.legend(loc='best')
+    # Trace 3: Individual Assets
+    traces.append(go.Scatter(
+        x=stats["Volatility"].values, y=mu_values,
+        mode='markers+text', text=tickers, textposition="top right",
+        name='Individual Assets',
+        marker=dict(size=10, color='gray', opacity=0.8, line=dict(width=1, color='black')),
+        hovertemplate="<b>%{text}</b><br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<extra></extra>"
+    ))
     
     weights_series = pd.Series(opt_weights, index=tickers, name="Optimal weights") if opt_weights is not None else None
-    return fig, weights_series
+    return traces, weights_series
 
 def get_market_caps(tickers):
     mcaps = {}
@@ -456,7 +463,7 @@ def calculate_average_turnover(weights_df):
 def get_model(model):
     d = {
         "Markowitz": run_mpt_optimization,
-        "Black-Litternman": run_mpt_optimization,
+        "Black-Litterman": run_mpt_optimization,
         "Hierarchal Risk Parity": run_hrp_optimization, 
         "CVAR": run_cvar_optimization, 
         "Naive Risk Parity": run_nrp_optimization, 
@@ -465,47 +472,107 @@ def get_model(model):
 
     return d[model]
 
-def fit_model(models):
+def fit_model(models, basket, expected, cov_matrix, price_data):
     to_run = []
     # markowitz target vol or max sharpe
     # black-litterman view + confidence (make dropdown for portfolio?)
     # CVAR alpha
     # Risk parities nothing (yay)
+    traces = {}
     for model in models:
         params = {}
         temp = {}
         params["model"] = get_model(model)
-        if model == "Markowitz" or model == "Black-Litterman":
-            st.write("Markowitz Model Params")
-            max_sharpe = st.radio("Max Sharpe",
-                     [True, False],
-                     horizontal = True)
-            if max_sharpe == False:
-                target_vol = st.number_input(
-                    "Enter Volatility",
+        temp["price_data"] = price_data
+        if model == "Markowitz":
+            with st.expander("Markowitz Params"):
+                st.write("Markowitz Model Params")
+                max_sharpe = st.radio("Max Sharpe",
+                        [True, False], key = f"Mark_sharpe_{model}",
+                        horizontal = True)
+                if max_sharpe == False:
+                    target_vol = st.number_input(
+                        "Enter Volatility", key = f"Mark_vol_{model}",
+                        step = 0.001,
+                        min_value = 0.0,
+                    )
+                temp["find_max_sharpe"] = max_sharpe
+                temp["target_vol"] = target_vol if not max_sharpe else None
+            traces["Markowitz"] = plot_efficient_frontier(expected, cov_matrix, basket, target_vol = temp["target_vol"], find_max_sharpe = max_sharpe)
+        if model == "Black-Litterman":
+            with st.expander("Black-Litterman Params"):
+                delta = st.number_input(
+                "Enter delta",
+                step = 0.001,
+                min_value = 0.001,
+                value = 5.00
+                )
+                tau = st.number_input(
+                "Enter tau",
+                step = 0.001,
+                min_value = 0.0,
+                value = 0.05
+                )
+                # make it expected instead
+                default_views = expected["Expected Return"].to_dict()
+                default_conf = {t: 0.0 for t in basket}
+                if st.button("Populate with Finbert"):
+                    delta_views, default_conf = ai_bl_params(basket)
+                    for t in basket:
+                        default_views[t] = expected.loc[t]["Expected Return"] + delta_views[t]
+                with st.expander("Stocks Views and Confidence", expanded = True):
+                    for ticker in basket:
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.write(ticker)
+                        with c2:
+                            st.number_input(
+                                f"Enter expected return for {ticker}",
+                                step = 0.001,
+                                value = default_views[ticker]
+                            )
+                        with c3:
+                            st.number_input(
+                                f"Enter confidence for {ticker}",
+                                step = 0.001,
+                                min_value = 0.0,
+                                value = default_conf[ticker]
+                            )
+                    max_sharpe = st.radio("Max Sharpe",
+                            [True, False], key = f"BL_sharpe_{ticker}",
+                            horizontal = True)
+                    if max_sharpe == False:
+                        target_vol = st.number_input(
+                            "Enter Volatility",
+                            step = 0.001, key = f"BL_vol_{ticker}",
+                            min_value = 0.0,
+                        )
+                temp["find_max_sharpe"] = max_sharpe
+                temp["target_vol"] = target_vol if not max_sharpe else None
+                mcaps = get_market_caps(basket)
+                bl_mu = get_black_litterman(cov_matrix = cov_matrix, mcaps = mcaps, views_dict =default_views,
+                                            conf_dict = default_conf, delta = delta, tau = tau)
+                t = expected.copy()
+                t["Expected Return"] = bl_mu
+                temp["price_data"] = price_data
+          
+            traces["Black-Litterman"] = plot_efficient_frontier(t, cov_matrix, basket, target_vol = temp["target_vol"], find_max_sharpe = max_sharpe)
+
+        if model == "CVAR":
+            with st.expander("CVAR params"):
+                st.write("CVAR Model Params")
+                alpha = st.number_input(
+                    "Enter alpha",
                     step = 0.001,
                     min_value = 0.0,
+                    value = 0.95
                 )
-            temp["max_sharpe"] = max_sharpe
-            temp["target_vol"] = target_vol if not max_sharpe else None
-            if model == "Black-Litterman":
-                temp["views"] = {}
-                temp["conf"] = {}
-            params["model_params"] = temp
-            to_run.append(params)
-            continue
-        if model == "CVAR":
-            st.write("CVAR Model Params")
-            alpha = st.number_input(
-                "Enter alpha",
-                step = 0.001,
-                min_value = 0.0
-            )
-            temp["alpha"] = alpha
-            params["model_params"] = temp
-            to_run.append(params)
-            continue
-    return to_run
+                temp["alpha"] = alpha
+                params["model_params"] = temp
+                to_run.append(params)
+        params["model_params"] = temp
+        to_run.append(params)
+    return to_run, traces
 
 
 

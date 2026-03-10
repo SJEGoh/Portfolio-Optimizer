@@ -70,7 +70,6 @@ def get_bl_parameters(tickers, news_data, tone_model, fls_model):
         except Exception as e:
             print(f"Model error for {t}: {e}")
             continue
-        print(tones)
         weighted_scores = []
         for i in range(len(tones)):
             t_res = tones[i]
