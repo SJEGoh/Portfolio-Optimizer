@@ -390,7 +390,7 @@ def get_returns(cleaned_optimization, price_data, stats, cov_matrix):
     return ret, vol, sharpe
 
 @st.cache_data(ttl=86400)
-def run_10yr_backtest(price_data, strategy_func, rebalance_days=126, lookback_days=252):
+def run_10yr_backtest(price_data, _strategy_func, rebalance_days=126, lookback_days=252):
     initial_cash = 100.0
     current_value = initial_cash
     equity_curve = []
@@ -415,7 +415,7 @@ def run_10yr_backtest(price_data, strategy_func, rebalance_days=126, lookback_da
         train_data = raw_train_data[active_tickers]
         
         # B. Optimize (Returns weights ONLY for active tickers)
-        weights_active = strategy_func(train_data)
+        weights_active = _strategy_func(train_data)
         
         # RE-ALIGN: Map back to the full universe so we don't get indexing errors
         full_weights = pd.Series(0.0, index=price_data.columns)
