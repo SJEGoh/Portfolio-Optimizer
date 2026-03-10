@@ -33,7 +33,7 @@ def main():
     with c2:
         st.header("Further params")
         st.divider()
-        if not tickers:
+        if not tickers or not models:
             st.stop()
         
 
