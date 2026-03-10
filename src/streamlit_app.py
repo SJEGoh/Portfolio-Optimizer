@@ -92,6 +92,7 @@ def main():
     
 
     results = []
+    print(models_to_run)
     for name, s in zip(models, models_to_run):
         weights = s['model'](**s['model_params'])
         ret, vol, sharpe = get_returns(weights, price_data, expected, cov_matrix)

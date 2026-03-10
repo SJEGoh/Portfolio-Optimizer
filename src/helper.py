@@ -608,8 +608,7 @@ def fit_model(models, price_data = None, basket = None, expected = None, cov_mat
                     value = 0.95
                 )
                 temp["alpha"] = alpha
-                params["model_params"] = temp
-                to_run.append(params)
+
         params["model_params"] = temp
         to_run.append(params)
     return to_run, traces
