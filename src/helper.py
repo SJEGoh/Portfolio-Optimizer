@@ -453,6 +453,62 @@ def calculate_average_turnover(weights_df):
     
     return avg_turnover
 
+def get_model(model):
+    d = {
+        "Markowitz": run_mpt_optimization,
+        "Black-Litternman": run_mpt_optimization,
+        "Hierarchal Risk Parity": run_hrp_optimization, 
+        "CVAR": run_cvar_optimization, 
+        "Naive Risk Parity": run_nrp_optimization, 
+        "ERC Risk Parity": run_erp_optimization
+    }
+
+    return d[model]
+
+def fit_model(models):
+    to_run = []
+    # markowitz target vol or max sharpe
+    # black-litterman view + confidence (make dropdown for portfolio?)
+    # CVAR alpha
+    # Risk parities nothing (yay)
+    for model in models:
+        params = {}
+        temp = {}
+        params["model"] = get_model(model)
+        if model == "Markowitz" or model == "Black-Litterman":
+            st.write("Markowitz Model Params")
+            max_sharpe = st.radio("Max Sharpe",
+                     [True, False],
+                     horizontal = True)
+            if max_sharpe == False:
+                target_vol = st.number_input(
+                    "Enter Volatility",
+                    step = 0.001,
+                    min_value = 0.0,
+                )
+            temp["max_sharpe"] = max_sharpe
+            temp["target_vol"] = target_vol if not max_sharpe else None
+            if model == "Black-Litterman":
+                temp["views"] = {}
+                temp["conf"] = {}
+            params["model_params"] = temp
+            to_run.append(params)
+            continue
+        if model == "CVAR":
+            st.write("CVAR Model Params")
+            alpha = st.number_input(
+                "Enter alpha",
+                step = 0.001,
+                min_value = 0.0
+            )
+            temp["alpha"] = alpha
+            params["model_params"] = temp
+            to_run.append(params)
+            continue
+    return to_run
+
+
+
 if __name__ == "__main__":
     basket = ["SPY", "TLT", "GLD", "IVOL"]
     weights = get_market_caps(basket)
