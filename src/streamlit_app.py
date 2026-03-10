@@ -1,7 +1,7 @@
 import streamlit as st
 from helper import get_matrices, get_ticker_expected, plot_efficient_frontier, get_market_caps, get_black_litterman, get_full_portfolio_df
 from helper import run_hrp_optimization, run_cvar_optimization, get_returns, run_nrp_optimization, run_erp_optimization
-from helper import fit_model, generate_comparison_bar
+from helper import fit_model, generate_comparison_bar, create_ticker_color_map
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
 import pandas as pd
@@ -31,7 +31,7 @@ def main():
         price_data = get_full_portfolio_df(basket, start_date = start_date)
         cov_matrix, _ = get_matrices(basket, start_date = start_date)
         expected = get_ticker_expected(basket, start_date = start_date)
-        models_to_run, traces = fit_model(models, basket, expected, cov_matrix, price_data)
+        models_to_run, traces = fit_model(models, price_data, basket, expected, cov_matrix)
     if not traces:
         traces, weights = plot_efficient_frontier(expected, cov_matrix, basket)
     fig = go.Figure()
@@ -117,6 +117,7 @@ def main():
         # Add it to your figure
         fig.add_trace(current_port_trace)
     st.plotly_chart(fig, theme = None)
+
     # Create the tabs at the top of your results section
     tab_summary, *strategy_tabs = st.tabs(["📊 Executive Summary"] + [f"🎯 {m['name']}" for m in results])
 
@@ -135,10 +136,8 @@ def main():
         ])
         st.table(summary_df)
 
-        # Comparison Bar Chart (Returns vs Vol)
-        # This is where you show the judges the "Efficiency" of each model
         st.plotly_chart(generate_comparison_bar(results)) 
-
+    ticker_color_map = create_ticker_color_map(basket)
     # --- STRATEGY SPECIFIC TABS ---
     for i, tab in enumerate(strategy_tabs):
         strategy = results[i]
@@ -159,6 +158,7 @@ def main():
                     x=weights_df['Ticker'],
                     y=weights_df['Weight'],
                     marker_color='#1f77b4', # Consistent professional blue
+                    fillcolor=ticker_color_map.get(ticker, '#7f7f7f'),
                     hovertemplate="<b>%{x}</b><br>Weight: %{y:.2%}<extra></extra>"
                 ))
 

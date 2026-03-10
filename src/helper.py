@@ -9,6 +9,7 @@ from numpy.linalg import inv
 from pypfopt import EfficientCVaR, expected_returns, HRPOpt
 import plotly.graph_objects as go
 from finbert import ai_bl_params
+import plotly.colors as pc
 from plotly.subplots import make_subplots
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
@@ -52,7 +53,7 @@ def get_full_portfolio_df(tickers, start_date="2015-01-01"):
     portfolio_df = pd.concat(all_dfs, axis=1)
     
     # Drop rows where ANY ticker has a NaN (important for HRP/BL math)
-    return portfolio_df.dropna()
+    return portfolio_df
 
 def get_matrices(tickers, start_date = "2020-01-01", end_date = date.today()):
     price_df = pd.DataFrame()
@@ -379,43 +380,57 @@ def get_returns(cleaned_optimization, price_data, stats, cov_matrix):
     sharpe = (ret-0.02)/vol
     return ret, vol, sharpe
 
-def run_10yr_backtest(price_data, strategy_func, rebalance_days = 126, lookback_days = 252):
-    """
-    Simulates a 10-year journey starting with $100.
-    rebalance_step = 126 days (~6 months)
-    """
+def run_10yr_backtest(price_data, strategy_func, rebalance_days=126, lookback_days=252):
     initial_cash = 100.0
     current_value = initial_cash
     equity_curve = []
     equity_dates = []
     weight_history = {}
     
-    # 1. Identify Rebalance Dates
-    # We need at least 1 year of data before the start to 'train' the first weights
+    # Identify Rebalance Dates
     rebalance_indices = np.arange(lookback_days, len(price_data), rebalance_days)
     
     for start_idx in rebalance_indices:
-        # A. Look-back (The 1 year of data prior to the rebalance)
-        train_data = price_data.iloc[start_idx - lookback_days : start_idx]
+        # A. Look-back & DYNAMIC FILTER
+        # We slice the training window
+        raw_train_data = price_data.iloc[start_idx - lookback_days : start_idx]
         
-        # B. Optimize (Get weights for the NEXT 6 months)
-        weights = strategy_func(train_data)
+        # Only keep tickers that have 100% valid data in this specific window
+        # This is where IVOL gets ignored in 2015 but picked up in 2020
+        active_tickers = raw_train_data.dropna(axis=1).columns
+        
+        if len(active_tickers) == 0:
+            continue
+            
+        train_data = raw_train_data[active_tickers]
+        
+        # B. Optimize (Returns weights ONLY for active tickers)
+        weights_active = strategy_func(train_data)
+        
+        # RE-ALIGN: Map back to the full universe so we don't get indexing errors
+        full_weights = pd.Series(0.0, index=price_data.columns)
+        full_weights.update(weights_active)
+        
         rebalance_date = price_data.index[start_idx]
-        weight_history[rebalance_date] = weights
+        weight_history[rebalance_date] = full_weights
         
-        # C. Apply (Calculate performance for the next 126 days)
+        # C. Apply (Calculate performance for the next rebalance period)
         end_idx = min(start_idx + rebalance_days, len(price_data))
-        period_returns = price_data.iloc[start_idx : end_idx].pct_change().dropna()
         
-        # Calculate daily growth of the $100 slice
-        portfolio_daily_rets = (period_returns * weights).sum(axis=1)
+        # We use ffill() here to handle any temporary halts during the forward period
+        period_prices = price_data.iloc[start_idx : end_idx].ffill()
+        period_returns = period_prices.pct_change().fillna(0) # First row of period is 0% change
+        
+        # Calculate daily growth using the FULL weights series
+        portfolio_daily_rets = (period_returns * full_weights).sum(axis=1)
         
         for date, ret in portfolio_daily_rets.items():
             current_value *= (1 + ret)
             equity_curve.append(current_value)
             equity_dates.append(date)
+
     weights_df = pd.DataFrame(weight_history).T
-    return pd.Series(equity_curve, index = equity_dates), weights_df
+    return pd.Series(equity_curve, index=equity_dates), weights_df
 
 def extract_portfolio_metrics(equity_curve, risk_free_rate=0.02):
     """
@@ -478,7 +493,7 @@ def get_model(model):
 
     return d[model]
 
-def fit_model(models, basket, expected, cov_matrix, price_data):
+def fit_model(models, price_data = None, basket = None, expected = None, cov_matrix = None):
     to_run = []
     # markowitz target vol or max sharpe
     # black-litterman view + confidence (make dropdown for portfolio?)
@@ -489,7 +504,8 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
         params = {}
         temp = {}
         params["model"] = get_model(model)
-        temp["price_data"] = price_data
+        if isinstance(price_data, pd.DataFrame):
+            temp["price_data"] = price_data
         if model == "Markowitz":
             with st.expander("Markowitz Params"):
                 st.write("Markowitz Model Params")
@@ -504,7 +520,8 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
                     )
                 temp["find_max_sharpe"] = max_sharpe
                 temp["target_vol"] = target_vol if not max_sharpe else None
-            traces["Markowitz"] = plot_efficient_frontier(expected, cov_matrix, basket, target_vol = temp["target_vol"], find_max_sharpe = max_sharpe)
+            if basket:
+                traces["Markowitz"] = plot_efficient_frontier(expected, cov_matrix, basket, target_vol = temp["target_vol"], find_max_sharpe = max_sharpe)
         if model == "Black-Litterman":
             with st.expander("Black-Litterman Params"):
                 delta = st.number_input(
@@ -586,6 +603,26 @@ def fit_model(models, basket, expected, cov_matrix, price_data):
         params["model_params"] = temp
         to_run.append(params)
     return to_run, traces
+
+def create_ticker_color_map(tickers):
+    """
+    Creates a deterministic mapping of tickers to colors.
+    """
+    # 1. Sort tickers alphabetically so 'AAPL' always gets the same index
+    sorted_tickers = sorted(list(set(tickers)))
+    
+    # 2. Use a high-contrast professional palette (e.g., Plotly's D3 or G10)
+    # D3 is the industry standard for financial dashboards
+    palette = pc.qualitative.D3 
+    
+    # 3. Create the dictionary (using modulo % to prevent index errors if basket > 10)
+    color_map = {
+        ticker: palette[i % len(palette)] 
+        for i, ticker in enumerate(sorted_tickers)
+    }
+    
+    return color_map
+
 def generate_comparison_bar(results):
     names = [r['name'] for r in results]
     returns = [r['metrics'][0] for r in results]
@@ -632,6 +669,128 @@ def generate_comparison_bar(results):
     fig.update_yaxes(title_text="Sharpe Ratio (Score)", secondary_y=True)
 
     return fig
+
+def plot_backtest_results(backtest_results):
+    fig = go.Figure()
+    
+    metrics = {}
+    # Define your standard color map for consistency
+    for name, data in backtest_results.items():
+        # data[0] is the Equity Series (the first element in your tuple)
+        equity_series = data[0]
+        curr_metrics = extract_portfolio_metrics(equity_series)
+        metrics[name] = curr_metrics
+
+        fig.add_trace(go.Scatter(
+            x=equity_series.index,
+            y=equity_series.values,
+            mode='lines',
+            name=name,
+            hovertemplate=f"<b>{name}</b><br>Value: $%{{y:,.2f}}<extra></extra>"
+        ))
+
+    fig.update_layout(
+        title=f"<b>Portfolio Equity Growth ({equity_series.index[0].year} - {equity_series.index[-1].year})</b>",
+        xaxis_title="Timeline",
+        yaxis_title="Portfolio Value ($)",
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=50, r=50, t=80, b=50)
+    )
+    
+    # Optional: Log scale for long-term growth comparison
+    # fig.update_yaxes(type="log") 
+
+    return fig, metrics
+
+def plot_turnover_analysis(weights_df, ticker_color_map, model_name="Strategy"):
+    """
+    Creates a professional stacked area chart using plotly.graph_objects.
+    """
+    fig = go.Figure()
+
+    # We iterate through tickers so each one is its own 'layer' in the stack
+    # Standardizing the order (alphabetical) ensures consistency across tabs
+    for ticker in sorted(weights_df.columns):
+        fig.add_trace(go.Scatter(
+            x=weights_df.index,
+            y=weights_df[ticker],
+            name=ticker,
+            mode='lines',
+            line=dict(width=0.5, color='white'), # Thin border between layers
+            stackgroup='one', # This is what makes it a stacked area chart
+            fillcolor=ticker_color_map.get(ticker, '#7f7f7f'),
+            hovertemplate=f"<b>{ticker}</b>: %{{y:.2%}}<extra></extra>"
+        ))
+
+    fig.update_layout(
+        title=f"<b>{model_name}: Historical Capital Allocation</b>",
+        xaxis_title="Rebalance Timeline",
+        yaxis_title="Portfolio Weight (%)",
+        yaxis_tickformat='.0%',
+        template="plotly_white",
+        height = 600,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=80, b=40, l=60, r=40),
+        # Ensure the y-axis is locked to 100%
+        yaxis=dict(range=[0, 1], fixedrange=True)
+    )
+
+    return fig
+
+def plot_strategy_performance(equity_series, model_name="Strategy"):
+    # 1. Calculate Drawdown
+    rolling_max = equity_series.cummax()
+    
+    fig = go.Figure()
+
+    # 2. Add Equity Curve (Primary Y-Axis)
+    fig.add_trace(go.Scatter(
+        x=equity_series.index, 
+        y=equity_series.values,
+        name="Portfolio Value",
+        fill='tozeroy',
+        fillcolor='rgba(44, 160, 44, 0.1)',
+        yaxis="y1"
+    ))
+
+    # 4. Mirror Layout Styling
+    fig.update_layout(
+        title=f"<b>{model_name}: Equity Curve</b>",
+        template="plotly_white",
+        hovermode="x unified",
+        height=600,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        
+        # Primary Axis (Value)
+        yaxis=dict(
+            title="Portfolio Value ($)",
+            side="left",
+            showgrid=True,
+            gridcolor='rgba(200, 200, 200, 0.2)'
+        ),
+        margin=dict(t=100, b=40, l=60, r=60)
+    )
+
+    return fig
+
+def run_spy_benchmark(price_data, start_idx=252):
+    """
+    Simulates a $100 investment in SPY starting from the 
+    first rebalance date of the other models.
+    """
+    # 1. Isolate SPY returns
+    spy_returns = price_data['SPY'].pct_change().dropna()
+    
+    # 2. Align the start date with your other backtests (after the 1yr lookback)
+    spy_test_returns = spy_returns.iloc[start_idx:]
+    
+    # 3. Calculate the cumulative growth of $100
+    spy_equity_curve = 100 * (1 + spy_test_returns).cumprod()
+    
+    return spy_equity_curve
 
 if __name__ == "__main__":
     basket = ["SPY", "TLT", "GLD", "IVOL"]
