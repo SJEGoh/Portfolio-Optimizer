@@ -431,7 +431,7 @@ def run_10yr_backtest(price_data, strategy_func, rebalance_days=126, lookback_da
         
         # We use ffill() here to handle any temporary halts during the forward period
         period_prices = price_data.iloc[start_idx : end_idx].ffill()
-        period_returns = period_prices.pct_change().fillna(0) # First row of period is 0% change
+        period_returns = period_prices.ffill().pct_change(fill_method=None).fillna(0)
         
         # Calculate daily growth using the FULL weights series
         portfolio_daily_rets = (period_returns * full_weights).sum(axis=1)
