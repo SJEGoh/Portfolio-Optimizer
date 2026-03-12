@@ -260,15 +260,18 @@ def run_hrp_optimization(price_data):
     returns = price_data.pct_change().dropna()
     
     # 2. Initialize HRP
-    hrp = HRPOpt(returns)
-    
-    # 3. Optimize the weights
-    # HRP does not need 'Expected Returns' - it only needs the returns' structure
-    weights = hrp.optimize()
-    
-    # 4. Clean and return
-    cleaned_weights = hrp.clean_weights()
-    return pd.Series(cleaned_weights)
+    if price_data.shape[1] < 2:
+        return pd.Series(1.0, index=price_data.columns)
+        
+    # 2. Initialize HRP
+    try:
+        hrp = HRPOpt(returns)
+        weights = hrp.optimize()
+        return pd.Series(hrp.clean_weights())
+    except Exception as e:
+        # Fallback to Equal Weight if the clustering still fails
+        n = price_data.shape[1]
+        return pd.Series([1/n]*n, index=price_data.columns)
 
 @st.cache_data(ttl=86400)
 def run_nrp_optimization(price_data):
