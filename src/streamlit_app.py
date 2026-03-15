@@ -29,7 +29,11 @@ def main():
         if not tickers or not start_date:
             st.stop()
         basket = [x.strip() for x in tickers.strip().split(",")]
-        price_data = get_full_portfolio_df(basket, start_date = start_date)
+        try:
+            price_data = get_full_portfolio_df(basket, start_date = start_date)
+        except ValueError:
+            st.write("Please type in valid ticker.")
+            st.stop()
         cov_matrix, _ = get_matrices(basket, start_date = start_date)
         expected = get_ticker_expected(basket, start_date = start_date)
         models_to_run, traces = fit_model(models, price_data, basket, expected, cov_matrix)
