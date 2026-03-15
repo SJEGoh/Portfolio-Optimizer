@@ -118,7 +118,7 @@ def main():
 
         # Add it to your figure
         fig.add_trace(current_port_trace)
-    st.plotly_chart(fig, theme = None)
+    st.plotly_chart(fig, width = "stretch")
 
     # Create the tabs at the top of your results section
     tab_summary, *strategy_tabs = st.tabs(["📊 Executive Summary"] + [f"🎯 {m['name']}" for m in results])
