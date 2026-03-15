@@ -14,6 +14,20 @@ from plotly.subplots import make_subplots
 
 client = RESTClient(st.secrets["POLYGON_API_KEY"])
 
+def draw_custom_header():
+    logo_col, nav1, nav2, _ = st.columns([0.1, 0.25, 0.25, 0.4])
+    with logo_col:
+        st.image("assets/NUSSIF_logo.jpeg", width=90)
+    with nav1:
+        st.write("")
+        if st.button("📈 PORTFOLIO OPTIMIZER", use_container_width=True):
+            st.switch_page("streamlit_app.py")
+    with nav2:
+        st.write("")
+        if st.button("📊 PORTFOLIO BACKTEST", use_container_width=True):
+            st.switch_page("pages/backtester.py")
+    st.divider()
+
 @st.cache_data(ttl=86400)
 def get_polygon_data(ticker, frm = "2015-01-01", to = date.today(), timespan = "day"):
     aggs = client.get_aggs(
