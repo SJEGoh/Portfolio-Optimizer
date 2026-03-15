@@ -28,7 +28,7 @@ def main():
         start_date = (date.today() - timedelta(days=lookback_period)).strftime("%Y-%m-%d")
         if not tickers or not start_date:
             st.stop()
-        basket = [x.strip() for x in tickers.strip().split(",")]
+        basket = [x.strip().upper() for x in tickers.strip().split(",")]
         try:
             price_data = get_full_portfolio_df(basket, start_date = start_date)
         except ValueError:
