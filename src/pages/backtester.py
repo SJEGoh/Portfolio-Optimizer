@@ -7,10 +7,11 @@ import plotly.graph_objects as go
 path_root = Path(__file__).parents[1]
 sys.path.append(str(path_root))
 
-from helper import run_10yr_backtest, run_mpt_optimization, extract_portfolio_metrics, calculate_average_turnover, create_ticker_color_map
+from helper import run_10yr_backtest, run_mpt_optimization, extract_portfolio_metrics, calculate_average_turnover, create_ticker_color_map, draw_custom_header
 from helper import get_full_portfolio_df, fit_model, run_10yr_backtest, plot_backtest_results, plot_turnover_analysis, plot_strategy_performance, run_spy_benchmark
 
 def main():
+    draw_custom_header()
     st.title("Backtest Portfolio Optimizers")
     st.set_page_config(page_title="Seasonality Analysis", layout="wide", initial_sidebar_state="collapsed")
 

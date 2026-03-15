@@ -1,12 +1,13 @@
 import streamlit as st
 from helper import get_matrices, get_ticker_expected, plot_efficient_frontier, get_market_caps, get_black_litterman, get_full_portfolio_df
 from helper import run_hrp_optimization, run_cvar_optimization, get_returns, run_nrp_optimization, run_erp_optimization
-from helper import fit_model, generate_comparison_bar, create_ticker_color_map
+from helper import fit_model, generate_comparison_bar, create_ticker_color_map, draw_custom_header
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
 import pandas as pd
 
 def main():
+    draw_custom_header()
     st.set_page_config(page_title="Portfolio Optimizer", layout="wide", initial_sidebar_state="collapsed")
     st.title("Portfolio Optimizer")
     c1, c2 = st.columns([0.4, 0.6])
