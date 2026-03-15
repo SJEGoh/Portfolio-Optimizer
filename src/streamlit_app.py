@@ -42,7 +42,7 @@ def main():
     fig = go.Figure()
     fig.update_layout(
         title="Returns against Volatility",
-        xaxis_title="Volatility",
+        xaxis_title="Volatility (%)",
         yaxis_title="Returns (%)"
     )
     fig.update_xaxes(tickformat=".0%")
