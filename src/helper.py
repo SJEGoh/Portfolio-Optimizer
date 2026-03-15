@@ -537,13 +537,13 @@ def fit_model(models, price_data = None, basket = None, expected = None, cov_mat
         if model == "Black-Litterman":
             with st.expander("Black-Litterman Params"):
                 delta = st.number_input(
-                "Enter delta",
+                "Enter Risk Aversion (1.0 - 10.0)",
                 step = 0.001,
                 min_value = 0.001,
                 value = 5.00
                 )
                 tau = st.number_input(
-                "Enter tau",
+                "Enter Market Efficiency (0.01 - 1.00)",
                 step = 0.001,
                 min_value = 0.0,
                 value = 0.05
