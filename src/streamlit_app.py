@@ -32,7 +32,7 @@ def main():
         try:
             price_data = get_full_portfolio_df(basket, start_date = start_date)
         except ValueError:
-            st.write("Please type in valid ticker.")
+            st.write("Please input valid ticker.")
             st.stop()
         cov_matrix, _ = get_matrices(basket, start_date = start_date)
         expected = get_ticker_expected(basket, start_date = start_date)

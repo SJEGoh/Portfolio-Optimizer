@@ -39,7 +39,11 @@ def main():
         
 
         basket = [x.strip().upper() for x in tickers.strip().split(",")]
-        full_price_data = get_full_portfolio_df(basket, start_date = backtest_length)
+        try:
+            full_price_data = get_full_portfolio_df(basket, start_date = backtest_length)
+        except ValueError:
+            st.write("Please input valid ticker.")
+            st.stop()
         models_to_run, _ = fit_model(models)
 
         backtest_data = {}
