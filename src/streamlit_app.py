@@ -40,6 +40,11 @@ def main():
     if not traces:
         traces, weights = plot_efficient_frontier(expected, cov_matrix, basket)
     fig = go.Figure()
+    fig.update_layout(
+        title="Returns against Volatility",
+        xaxis_title="Returns (%)",
+        yaxis_title="Volatility"
+    )
     if isinstance(traces, dict):
         for group, (trace_list, _) in traces.items():
             for i, trace in enumerate(trace_list):
