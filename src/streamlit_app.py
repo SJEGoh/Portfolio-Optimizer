@@ -42,9 +42,11 @@ def main():
     fig = go.Figure()
     fig.update_layout(
         title="Returns against Volatility",
-        xaxis_title="Returns (%)",
-        yaxis_title="Volatility"
+        xaxis_title="Volatility",
+        yaxis_title="Returns (%)"
     )
+    fig.update_xaxes(tickformat=".0%")
+    fig.update_yaxes(tickformat=".0%")
     if isinstance(traces, dict):
         for group, (trace_list, _) in traces.items():
             for i, trace in enumerate(trace_list):
